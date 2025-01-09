@@ -2,16 +2,20 @@ package mate.academy.rickandmorty.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
-import mate.academy.rickandmorty.dto.CharacterDto;
+import mate.academy.rickandmorty.dto.CharacterModelDto;
+import mate.academy.rickandmorty.mapper.CharacterModelMapper;
+import mate.academy.rickandmorty.model.CharacterModel;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
+import org.hibernate.query.Query;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -27,24 +31,17 @@ public class RickAndMortyClient {
         this.sessionFactory = sessionFactory;
     }
 
-    public CharacterDto getRandomCharacter() {
+    public CharacterModel getRandomCharacter() {
         Transaction transaction = null;
         int random = (int) (Math.random() * RANGE) + MIN;
-        HttpClient httpClient = HttpClient.newHttpClient();
-        String url = BASE_URL + CHARACTER + "/" + random;
-        HttpRequest httpRequest = HttpRequest.newBuilder().GET().uri(URI.create(url)).build();
-        try {
-            Session session = sessionFactory.openSession();
+        try (Session session = sessionFactory.openSession()) {
             transaction = session.beginTransaction();
-            HttpResponse<String> httpResponse = httpClient
-                    .send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            ObjectMapper objectMapper = new ObjectMapper();
-            CharacterDto characterDto = objectMapper.readValue(httpResponse.body(),
-                    new TypeReference<>() {});
-            session.persist(characterDto);
+            Query<CharacterModel> query = session.createQuery("FROM User u "
+                    + "WHERE u.externalId = :random", CharacterModel.class);
+            query.setParameter("externalId", random);
             transaction.commit();
-            return characterDto;
-        } catch (IOException | InterruptedException e) {
+            return query.getSingleResult();
+        } catch (Exception e) {
             if (transaction != null) {
                 transaction.rollback();
             }
@@ -52,19 +49,50 @@ public class RickAndMortyClient {
         }
     }
 
-    public List<CharacterDto> getCharactersList(String character) {
+    public List<CharacterModel> getCharactersList(String name) {
+        Transaction transaction = null;
+        try (Session session = sessionFactory.openSession()) {
+            transaction = session.beginTransaction();
+            Query<CharacterModel> query = session.createQuery("FROM User u "
+                    + "WHERE u.name = :%name%", CharacterModel.class);
+            query.setParameter("%name%", name);
+            transaction.commit();
+            return query.getResultList();
+        } catch (Exception e) {
+            if (transaction != null) {
+                transaction.rollback();
+            }
+            throw new RuntimeException(e);
+        }
+    }
+
+    @PostConstruct
+    public List<CharacterModelDto> fetchAllCharacters() {
+        StringBuilder builder = new StringBuilder();
+        for (int i = MIN; i <= MAX; i++) {
+            builder.append(i);
+            if (i < MAX) {
+                builder.append(",");
+            }
+        }
         Transaction transaction = null;
         HttpClient httpClient = HttpClient.newHttpClient();
-        String url = BASE_URL + CHARACTER + "?name=" + character;
-        HttpRequest httpRequest = HttpRequest.newBuilder().GET().uri(URI.create(url)).build();
-        try {
-            Session session = sessionFactory.openSession();
+        String url = BASE_URL + CHARACTER + "/" + builder;
+        HttpRequest httpRequest = HttpRequest
+                .newBuilder()
+                .GET()
+                .uri(URI.create(url))
+                .build();
+        try (Session session = sessionFactory.openSession()) {
             transaction = session.beginTransaction();
             HttpResponse<String> httpResponse = httpClient
                     .send(httpRequest, HttpResponse.BodyHandlers.ofString());
             ObjectMapper objectMapper = new ObjectMapper();
-            List<CharacterDto> characters = objectMapper
+            List<CharacterModelDto> characters = objectMapper
                     .readValue(httpResponse.body(), new TypeReference<>() {});
+            for (CharacterModelDto character : characters) {
+                session.persist(CharacterModelMapper.toCharacterModel(character));
+            }
             transaction.commit();
             return characters;
         } catch (IOException | InterruptedException e) {
